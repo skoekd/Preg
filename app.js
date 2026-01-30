@@ -7,13 +7,15 @@
   const $ = (sel, el=document) => el.querySelector(sel);
   const $$ = (sel, el=document) => Array.from(el.querySelectorAll(sel));
 
-  const ROUTES = ["wizard","saved","about","plan"];
+  const ROUTES = ["workout","profile","history","about"];
   let state = {
-    route: "wizard",
+    route: "workout",
     wizardStep: 0,
     profile: defaultProfile(),
     generatedPlan: null,
     activeSavedId: null,
+    activeWeekIndex: 0,
+    editingLogId: null,
   };
 
   function defaultProfile(){
@@ -21,7 +23,7 @@
       clearanceAcknowledged: false,
       providerRestrictions: { has: false, tags: [], notes: "" },
 
-      stage: { mode: "pregnant", weeksPregnant: 20, weeksPostpartum: 0, deliveryType:"vaginal", breastfeeding:false },
+      stage: { mode: "pregnant", weeksPregnant: 20, weeksPostpartum: 0, deliveryType:"vaginal", breastfeeding:false, dueDate:"", postpartumPlanWeeks: 24 },
 
       // Program structure controls how workouts differ across days.
       // Supported: full_body, upper_lower, ab_split, abc_rotation
@@ -104,7 +106,11 @@
     ],
     pull: [
       {name:"Barbell Row", tags:{iap:2, balance:2, grip:2, position:"standing", impact:0, isometric:0, equip:["barbell","gym_full"]}},
-      {name:"Chest-Supported Row", tags:{iap:1, balance:0, grip:2, position:"supported", impact:0, isometric:0, equip:["gym_full","home_db"]}},
+      // "Chest-supported" rows are typically prone on an incline bench. Great for many people,
+      // but late pregnancy can make prone abdominal pressure uncomfortable/unsafe.
+      {name:"Chest-Supported Row (incline bench)", tags:{iap:1, balance:0, grip:2, position:"prone_supported", abdomenPressure:2, impact:0, isometric:0, equip:["gym_full","home_db"]}},
+      {name:"One-Arm DB Row (bench-supported)", tags:{iap:1, balance:1, grip:2, position:"supported", abdomenPressure:0, impact:0, isometric:0, equip:["gym_full","home_db","dumbbells"]}},
+      {name:"Seated Machine Row", tags:{iap:1, balance:0, grip:1, position:"seated", abdomenPressure:0, impact:0, isometric:0, equip:["gym_full"]}},
       {name:"Seated Cable Row", tags:{iap:1, balance:0, grip:1, position:"seated", impact:0, isometric:0, equip:["gym_full"]}},
       {name:"Lat Pulldown", tags:{iap:1, balance:0, grip:1, position:"seated", impact:0, isometric:0, equip:["gym_full"]}},
       {name:"Band Row", tags:{iap:0, balance:0, grip:0, position:"standing", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
@@ -426,6 +432,16 @@
       // hard exclusions / strong constraints
       if(profile.hardLimits.avoidSupine && t.position==="supine") return -9999;
 
+      // Pregnancy-specific: avoid prone abdominal pressure as pregnancy progresses.
+      // 20+ weeks: avoid high abdominal pressure (e.g., prone incline chest-supported row).
+      // 28+ weeks: avoid any intentional abdominal pressure.
+      if(profile.stage?.mode === "pregnant"){
+        const gw = profile.stage.weeksPregnant ?? 0;
+        const ap = t.abdomenPressure ?? 0; // 0 none, 1 mild, 2 moderate/high
+        if(gw >= 28 && ap >= 1) return -9999;
+        if(gw >= 20 && ap >= 2) return -9999;
+      }
+
       // Avoid barbell lifts: hard-exclude barbell-tagged options regardless of equipment access
       if(profile.hardLimits.avoidBarbell && (t.equip || []).includes("barbell")) return -9999;
 
@@ -544,15 +560,15 @@
     return { intensity, rirMain, rirAcc, base: baseDosage, rest, notes };
   }
 
-  function generatePlan(profile){
+  // Generate a single-week plan for a given (possibly time-shifted) profile.
+  function generateWeekPlan(profile, weekSeed=0){
     const sk = stageKey(profile);
     const templateMeta = BASE_TEMPLATES[sk];
     const days = Math.max(1, Math.min(6, profile.schedule.daysPerWeek || templateMeta.defaultDays));
     const dials = computeDials(profile);
+
     if(dials.BEDREST){
       return {
-        id: "plan_" + Date.now(),
-        createdAt: new Date().toISOString(),
         template: templateMeta.name,
         stageKey: sk,
         dials,
@@ -572,12 +588,11 @@
       };
     }
 
-
     const sessions = templateMeta.sessions(days, profile).map((sess, dayIdx)=>{
       const blocks = sess.blocks.map((b, blockIdx)=>{
         const forced = b.forced || null;
-        // Seed adds controlled variety across days while still honoring constraints.
-        const seed = dayIdx * 10 + blockIdx;
+        // Seed adds controlled variety across days + weeks while still honoring constraints.
+        const seed = (weekSeed * 100) + (dayIdx * 10) + blockIdx;
         const ex = pickExercise(b.pattern, profile, dials, forced, seed);
         return { title:b.title, pattern:b.pattern, exercise: ex, optional: !!b.optional };
       });
@@ -606,8 +621,6 @@
     if(redDx) warnings.push("Your selections include a higher-risk condition. Use clinician restrictions as primary constraint; consider pelvic/OB clearance before resistance work.");
 
     return {
-      id: "plan_" + Date.now(),
-      createdAt: new Date().toISOString(),
       template: templateMeta.name,
       stageKey: sk,
       dials,
@@ -617,8 +630,88 @@
     };
   }
 
+  // Generate a multi-week plan that progresses to due date (if provided), and then postpartum for a user-selected duration.
+  function generatePlan(profile){
+    const createdAt = new Date().toISOString();
+    const id = "plan_" + Date.now();
+
+    const weeks = [];
+    const now = new Date();
+
+    function addWeek(label, tempProfile, weekSeed){
+      const weekPlan = generateWeekPlan(tempProfile, weekSeed);
+      weeks.push({ label, startDate: labelStartDate(now, weekSeed), profileSnapshot: snapshotStage(tempProfile), ...weekPlan });
+    }
+
+    // Pregnant mode: build pregnancy weeks until due date (if set), else default to 4 weeks.
+    if(profile.stage.mode === "pregnant"){
+      const due = profile.stage.dueDate ? new Date(profile.stage.dueDate) : null;
+      let pregWeeksCount = 4;
+      if(due && !isNaN(due.getTime())){
+        const diffDays = Math.max(0, Math.ceil((due.getTime() - now.getTime()) / (1000*60*60*24)));
+        pregWeeksCount = Math.max(1, Math.ceil(diffDays / 7));
+      }
+      for(let i=0; i<pregWeeksCount; i++){
+        const tp = deepClone(profile);
+        tp.stage.weeksPregnant = (profile.stage.weeksPregnant || 0) + i;
+        addWeek(`Pregnancy – Week ${tp.stage.weeksPregnant}`, tp, i);
+      }
+
+      // Add postpartum block if due date present and postpartumPlanWeeks > 0
+      const ppWeeks = Math.max(0, Math.min(104, Number(profile.stage.postpartumPlanWeeks || 0)));
+      if(due && !isNaN(due.getTime()) && ppWeeks > 0){
+        for(let j=0; j<ppWeeks; j++){
+          const tp = deepClone(profile);
+          tp.stage.mode = "postpartum";
+          tp.stage.weeksPostpartum = j;
+          addWeek(`Postpartum – Week ${j+1}`, tp, pregWeeksCount + j);
+        }
+      }
+    }
+
+    // Postpartum mode: generate from current weeks postpartum to requested horizon.
+    if(profile.stage.mode === "postpartum"){
+      const start = Number(profile.stage.weeksPostpartum || 0);
+      const ppWeeks = Math.max(1, Math.min(104, Number(profile.stage.postpartumPlanWeeks || 24)));
+      for(let j=0; j<ppWeeks; j++){
+        const tp = deepClone(profile);
+        tp.stage.weeksPostpartum = start + j;
+        addWeek(`Postpartum – Week ${tp.stage.weeksPostpartum+1}`, tp, j);
+      }
+    }
+
+    // Preconception mode: generate a 12-week progressive block by default (or 8 if user wants shorter later).
+    if(profile.stage.mode === "preconception"){
+      const count = 12;
+      for(let i=0; i<count; i++){
+        const tp = deepClone(profile);
+        addWeek(`Preconception – Week ${i+1}`, tp, i);
+      }
+    }
+
+    const warnings = [].concat(...weeks.map(w => w.warnings || [])).filter((v,i,a)=>a.indexOf(v)===i);
+
+    return { id, createdAt, weeks, warnings };
+  }
+
+  function snapshotStage(profile){
+    const s = profile.stage || {};
+    return { mode:s.mode, weeksPregnant:s.weeksPregnant, weeksPostpartum:s.weeksPostpartum, dueDate:s.dueDate, postpartumPlanWeeks:s.postpartumPlanWeeks };
+  }
+
+  function labelStartDate(now, seed){
+    const d = new Date(now.getTime());
+    d.setDate(d.getDate() + seed*7);
+    return d.toISOString().slice(0,10);
+  }
+
+  function deepClone(obj){
+    return JSON.parse(JSON.stringify(obj));
+  }
+
   // --- Persistence
   const LS_KEY = "nurturestrength_saved_plans_v1";
+  const LS_LOGS = "nurturestrength_workout_logs_v1";
   function loadSaved(){
     try{ return JSON.parse(localStorage.getItem(LS_KEY) || "[]"); }catch(e){ return []; }
   }
@@ -626,9 +719,23 @@
     localStorage.setItem(LS_KEY, JSON.stringify(arr));
   }
 
+  function loadLogs(){
+    try{ return JSON.parse(localStorage.getItem(LS_LOGS) || "[]"); }catch(e){ return []; }
+  }
+  function saveLogs(arr){
+    localStorage.setItem(LS_LOGS, JSON.stringify(arr));
+  }
+  function todayKey(){
+    const d = new Date();
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
   // --- UI Rendering
   function route(to){
-    if(!ROUTES.includes(to)) to = "wizard";
+    if(!ROUTES.includes(to)) to = "workout";
     state.route = to;
     render();
   }
@@ -642,9 +749,9 @@
       b.onclick = ()=> route(b.dataset.route);
     });
 
-    if(state.route === "wizard") root.appendChild(renderWizard());
-    if(state.route === "plan") root.appendChild(renderPlanView());
-    if(state.route === "saved") root.appendChild(renderSaved());
+    if(state.route === "workout") root.appendChild(renderWorkout());
+    if(state.route === "profile") root.appendChild(renderWizard());
+    if(state.route === "history") root.appendChild(renderHistory());
     if(state.route === "about") root.appendChild(renderAbout());
   }
 
@@ -707,7 +814,8 @@
     next.onclick = ()=>{
       if(state.wizardStep===steps.length-1){
         state.generatedPlan = generatePlan(state.profile);
-        state.route = "plan";
+        state.activeWeekIndex = 0;
+        state.route = "workout";
         render();
       } else {
         state.wizardStep = Math.min(steps.length-1, state.wizardStep+1);
@@ -770,8 +878,28 @@
 
     if(p.stage.mode==="pregnant"){
       wrap.appendChild(fieldRange("Weeks pregnant", p.stage.weeksPregnant, 0, 42, 1, v=>p.stage.weeksPregnant=v, "Used to set trimester-specific programming + position adjustments."));
+      wrap.appendChild(el("div",{class:"grid"},[
+        el("div",{class:"field col-6"},[
+          el("label",{},["Due date (optional)"]),
+          el("input",{type:"date", value:p.stage.dueDate || "", onchange:(e)=>p.stage.dueDate=e.target.value}),
+          el("div",{class:"help"},["If set, the program auto-builds week-by-week until due date."])
+        ]),
+        el("div",{class:"field col-6"},[
+          el("label",{},["Postpartum plan length"]),
+          el("select",{value:String(p.stage.postpartumPlanWeeks||24), onchange:(e)=>p.stage.postpartumPlanWeeks=parseInt(e.target.value,10)},[
+            opt("0","No postpartum plan"),opt("6","6 weeks"),opt("12","12 weeks"),opt("24","24 weeks"),opt("52","52 weeks"),opt("104","104 weeks")
+          ]),
+          el("div",{class:"help"},["How long you want the app to generate postpartum programming after birth."])
+        ])
+      ]));
     } else if(p.stage.mode==="postpartum"){
       wrap.appendChild(fieldRange("Weeks postpartum", p.stage.weeksPostpartum, 0, 156, 1, v=>p.stage.weeksPostpartum=v, "Used to set tissue tolerance + return-to-load pace."));
+      wrap.appendChild(el("div",{class:"field"},[
+        el("label",{},["How many future postpartum weeks to generate?"]),
+        el("select",{value:String(p.stage.postpartumPlanWeeks||24), onchange:(e)=>p.stage.postpartumPlanWeeks=parseInt(e.target.value,10)},[
+          opt("4","4 weeks"),opt("8","8 weeks"),opt("12","12 weeks"),opt("24","24 weeks"),opt("52","52 weeks"),opt("104","104 weeks")
+        ])
+      ]));
       wrap.appendChild(fieldSelect("Delivery type", p.stage.deliveryType, [
         ["vaginal","Vaginal"],["c_section","C-section"],["assisted","Assisted (vacuum/forceps)"],["vbac","VBAC"]
       ], v=>p.stage.deliveryType=v));
@@ -990,16 +1118,45 @@
       ["posture_endurance","Posture/upper back endurance"],
     ];
 
-    wrap.appendChild(el("div",{class:"field"},[
-      el("label",{},["Choose your top goals (up to 2)"]),
-      el("select",{multiple:true, size:8, onchange:(e)=>{
-        const sel = Array.from(e.target.selectedOptions).map(o=>o.value);
-        p.goals = sel.slice(0,2);
-        // enforce max 2 by re-rendering
-        render();
-      }}, goalOpts.map(([v,l])=>opt(v,l, p.goals.includes(v)))),
-      el("div",{class:"help"},["The plan prioritizes your top 2 goals."])
-    ]));
+    // Compact goal picker: dropdown menu with checkboxes (max 2) + auto-populated summary.
+    const goalMap = Object.fromEntries(goalOpts);
+    const goalPicker = el("details", {class:"dropdown", open:false}, [
+      el("summary", {class:"dropdown-summary"}, [
+        el("div", {class:"field"}, [
+          el("label",{},["Choose your top goals (pick up to 2)"]),
+          el("div", {class:"selectlike"}, [
+            el("span", {id:"goalSummary"}, [ (p.goals||[]).length ? (p.goals.map(g=>goalMap[g]||g).join(" • ")) : "Select up to 2 goals" ])
+          ]),
+          el("div",{class:"help"},["Click to open. Selecting a 3rd goal will be blocked."])
+        ])
+      ])
+    ]);
+    const menu = div("dropdown-menu");
+    goalOpts.forEach(([v,l])=>{
+      const row = div("dropdown-row");
+      const cb = el("input", {type:"checkbox", checked:(p.goals||[]).includes(v), onchange:(e)=>{
+        const cur = new Set(p.goals||[]);
+        if(e.target.checked){
+          if(cur.size >= 2){
+            e.target.checked = false;
+            alert("You can choose up to 2 goals.");
+            return;
+          }
+          cur.add(v);
+        } else {
+          cur.delete(v);
+        }
+        p.goals = Array.from(cur);
+        // update summary text without full re-render
+        const sum = document.getElementById("goalSummary");
+        if(sum) sum.textContent = p.goals.length ? p.goals.map(g=>goalMap[g]||g).join(" • ") : "Select up to 2 goals";
+      }});
+      row.appendChild(cb);
+      row.appendChild(el("span",{},[l]));
+      menu.appendChild(row);
+    });
+    goalPicker.appendChild(menu);
+    wrap.appendChild(goalPicker);
 
     wrap.appendChild(el("hr"));
 
@@ -1118,52 +1275,127 @@
     return map[k] || "";
   }
 
-  function renderPlanView(){
+// --- Tracking helpers (set-by-set)
+function parseDosageString(str){
+  // Accepts "2-3 sets x 6-12 reps" or "2 sets x 6-12 reps" etc.
+  const s = String(str||"");
+  const m = s.match(/(\d+)\s*-\s*(\d+)\s*sets?\s*x\s*(\d+)\s*-\s*(\d+)\s*reps?/i) ||
+            s.match(/(\d+)\s*sets?\s*x\s*(\d+)\s*-\s*(\d+)\s*reps?/i);
+  if(!m) return null;
+  if(m.length===5){
+    return {setsMin:Number(m[1]), setsMax:Number(m[2]), repsMin:Number(m[3]), repsMax:Number(m[4])};
+  }
+  return {setsMin:Number(m[1]), setsMax:Number(m[1]), repsMin:Number(m[2]), repsMax:Number(m[3])};
+}
+
+function plannedDosageForBlock(session, block){
+  const isMain = /Main Lift/i.test(block.title) || /Upper Push|Upper Pull/i.test(block.title);
+  const base = isMain ? parseDosageString(session.dosage.main) : parseDosageString(session.dosage.accessory);
+  const setsMin = base?.setsMin ?? (isMain ? 2 : 1);
+  const setsMax = base?.setsMax ?? (isMain ? 3 : 2);
+  const repsMin = base?.repsMin ?? (isMain ? 6 : 10);
+  const repsMax = base?.repsMax ?? (isMain ? 12 : 15);
+  return {
+    setsMin, setsMax, repsMin, repsMax,
+    setsText: `${setsMin}${setsMax!==setsMin?`-${setsMax}`:""} sets`,
+    repsText: `${repsMin}-${repsMax} reps`
+  };
+}
+
+function addSetRow(blockContainerId, planned){
+  const blk = document.getElementById(blockContainerId);
+  if(!blk) return;
+  const rows = blk.querySelector(".setrows");
+  if(!rows) return;
+  const idx = rows.querySelectorAll(".set-row").length + 1;
+  const row = el("div",{class:"set-row"},[
+    el("div",{class:"set-label"},[`Set ${idx}`]),
+    el("input",{class:"reps", type:"text", placeholder:planned?.repsText || "reps"}),
+    el("input",{class:"weight", type:"text", placeholder:"weight"}),
+    el("button",{class:"btn danger", type:"button", onclick:()=>{ row.remove(); renumberSetRows(rows); }},["✕"])
+  ]);
+  rows.appendChild(row);
+  renumberSetRows(rows);
+}
+
+function renumberSetRows(rowsEl){
+  const rows = $$(".set-row", rowsEl);
+  rows.forEach((r,i)=>{
+    const lbl = $(".set-label", r);
+    if(lbl) lbl.textContent = `Set ${i+1}`;
+  });
+}
+
+  function renderWorkout(){
     const plan = state.generatedPlan;
     const p = state.profile;
 
     const wrap = div();
-    if(!plan){
+    if(!plan || !plan.weeks || !plan.weeks.length){
       wrap.appendChild(el("div",{class:"panel"},[
         el("h1",{},["No plan generated yet"]),
-        el("p",{},["Go to New plan to generate one."])
+        el("p",{},["Go to the Profile tab to generate a plan."])
       ]));
       return wrap;
     }
 
+    // Week selector
+    const wIdx = Math.max(0, Math.min(plan.weeks.length-1, state.activeWeekIndex || 0));
+    const wk = plan.weeks[wIdx];
+
     const header = el("div",{class:"panel"},[
       el("div",{class:"hrow"},[
         el("div",{},[
-          el("h1",{},["Your plan"]),
-          el("p",{},[plan.template, " • ", `Stage: ${plan.stageKey.toUpperCase()}`, " • ", `Created: ${new Date(plan.createdAt).toLocaleString()}`])
+          el("h1",{},["Your program"]),
+          el("p",{},[`Created: ${new Date(plan.createdAt).toLocaleString()} • Weeks: ${plan.weeks.length}`])
         ]),
         el("div",{class:"inline"},[
-          el("span",{class:"badge ok"},[`Intensity: ${plan.dosage.intensity}`]),
-          el("span",{class:"badge"},[`RIR main: ${plan.dosage.rirMain}`]),
-          el("span",{class:"badge"},[`RIR accessory: ${plan.dosage.rirAcc}`]),
+          el("div",{class:"field"},[
+            el("label",{},["Select week"]),
+            el("select",{value:String(wIdx), onchange:(e)=>{ state.activeWeekIndex = Number(e.target.value)||0; render(); }},
+              plan.weeks.map((w,i)=> el("option",{value:String(i)},[`${i+1}. ${w.label}`]))
+            )
+          ])
         ])
       ]),
-      plan.warnings.length ? el("div",{class:"badge danger", style:"margin-top:10px;"},[plan.warnings[0]]) : null
+      plan.warnings?.length ? el("div",{class:"badge danger", style:"margin-top:10px;"},[plan.warnings[0]]) : null
     ].filter(Boolean));
     wrap.appendChild(header);
+
+    const wkHeader = el("div",{class:"panel"},[
+      el("div",{class:"hrow"},[
+        el("div",{},[
+          el("h2",{},[wk.label]),
+          el("p",{},[`Start date: ${wk.startDate} • Template: ${wk.template} • Stage: ${wk.stageKey.toUpperCase()}`])
+        ]),
+        el("div",{class:"inline"},[
+          el("span",{class:"badge ok"},[`Intensity: ${wk.dosage.intensity}`]),
+          el("span",{class:"badge"},[`RIR main: ${wk.dosage.rirMain}`]),
+          el("span",{class:"badge"},[`RIR accessory: ${wk.dosage.rirAcc}`]),
+        ])
+      ]),
+      wk.warnings?.length ? el("div",{class:"badge danger", style:"margin-top:10px;"},[wk.warnings[0]]) : null
+    ].filter(Boolean));
+    wrap.appendChild(wkHeader);
 
     const det = el("details",{open:false},[
       el("summary",{},["Dosage guidance & notes", el("span",{class:"summary-note"},["auto-adjusted by modifiers"])])
     ]);
     det.appendChild(el("div",{class:"panel"},[
-      el("p",{},[`Main: ${plan.dosage.base.main}`]),
-      el("p",{},[`Accessory: ${plan.dosage.base.accessory}`]),
-      el("p",{},[`Rest: ${plan.dosage.rest}`]),
-      el("ul",{}, plan.dosage.notes.map(n=>el("li",{},[n])))
+      el("p",{},[`Main: ${wk.dosage.base.main}`]),
+      el("p",{},[`Accessory: ${wk.dosage.base.accessory}`]),
+      el("p",{},[`Rest: ${wk.dosage.rest}`]),
+      el("ul",{}, (wk.dosage.notes||[]).map(n=>el("li",{},[n])))
     ]));
     wrap.appendChild(det);
 
-    // sessions
-    plan.sessions.forEach((s,idx)=>{
+    // sessions + tracking (for the selected week)
+    wk.sessions.forEach((s,idx)=>{
+      const dateKey = todayKey();
       const card = el("div",{class:"panel"},[
         el("div",{class:"hrow"},[
           el("h2",{},[s.name]),
-          el("span",{class:"badge"},[`Session ${idx+1} / ${plan.sessions.length}`]),
+          el("span",{class:"badge"},[`Session ${idx+1} / ${wk.sessions.length}`]),
         ]),
         el("p",{},[`Dosage: ${s.dosage.main}; ${s.dosage.accessory}.`]),
         el("table",{class:"table"},[
@@ -1173,8 +1405,51 @@
             el("td",{},[b.exercise]),
             el("td",{},[b.optional ? "Optional (auto-trimmed if time-limited)" : ""])
           ])))
-        ])
+        ]),
+
+        el("details",{open:false},[
+          el("summary",{},["Track this workout", el("span",{class:"summary-note"},["log sets/reps/weight"])])
+        ]),
       ]);
+
+      const details = card.querySelector("details");
+      if(details){
+        const logWrap = div("panel");
+        logWrap.appendChild(el("p",{},["Date: ", el("strong",{},[dateKey]), " • ", el("strong",{},[wk.label]), " • Save a quick log for each exercise."]));
+
+        // Build set-by-set tracker with "Add set" and autofill from planned dosage.
+const tracker = el("div",{class:"tracker"}, []);
+s.blocks.forEach((b,bIdx)=>{
+  const planned = plannedDosageForBlock(s, b);
+  const blkId = `logblk_${plan.id}_${wIdx}_${idx}_${bIdx}`;
+  const blk = el("div",{class:"panel", id:blkId, "data-blk":String(bIdx), style:"padding:12px;margin-top:10px;"},[
+    el("div",{class:"hrow"},[
+      el("div",{},[
+        el("h3",{},[b.exercise]),
+        el("p",{class:"muted"},[`Planned: ${planned.setsText} • ${planned.repsText}`])
+      ]),
+      el("button",{class:"btn", type:"button", onclick:()=>addSetRow(blkId, planned)},["Add set"])
+    ]),
+    el("div",{class:"setrows"})
+  ]);
+  tracker.appendChild(blk);
+  // initial rows
+  const n0 = planned.setsMin || 1;
+  for(let i=0;i<n0;i++) addSetRow(blkId, planned);
+  // notes
+  blk.appendChild(el("div",{class:"field", style:"margin-top:10px;"},[
+    el("label",{},["Notes (optional)"]),
+    el("input",{class:"note", type:"text", placeholder:"optional"})
+  ]));
+});
+logWrap.appendChild(tracker);
+
+        logWrap.appendChild(el("div",{class:"btnrow"},[
+          el("button",{class:"btn primary", type:"button", onclick:()=>handleSaveWorkoutLog(plan, wIdx, idx)},["Save workout log"]),
+          el("button",{class:"btn", type:"button", onclick:()=>route("history")},["View history"]),
+        ]));
+        details.appendChild(logWrap);
+      }
       wrap.appendChild(card);
     });
 
@@ -1185,7 +1460,7 @@
       el("div",{class:"grid"},[
         el("div",{class:"field col-6"},[
           el("label",{},["Program name"]),
-          el("input",{id:"saveName", placeholder:"e.g., 2nd trimester – 3 days – low IAP", value: defaultSaveName(plan, p)})
+          el("input",{id:"saveName", placeholder:"e.g., Pregnancy → due date + postpartum", value: defaultSaveName(plan, p)})
         ]),
         el("div",{class:"field col-6"},[
           el("label",{},["Notes (optional)"]),
@@ -1195,7 +1470,7 @@
       el("div",{class:"btnrow"},[
         el("button",{class:"btn primary", type:"button", onclick:()=>handleSavePlan(plan)},["Save to My Plans"]),
         el("button",{class:"btn", type:"button", onclick:()=>handleExport(plan)},["Export JSON"]),
-        el("button",{class:"btn", type:"button", onclick:()=>route("saved")},["View Saved Plans"]),
+        el("button",{class:"btn", type:"button", onclick:()=>route("history")},["History / Saved"]),
       ])
     ]);
     wrap.appendChild(savePanel);
@@ -1204,10 +1479,22 @@
   }
 
   function defaultSaveName(plan, profile){
-    const sk = plan.stageKey.toUpperCase();
     const d = profile.schedule.daysPerWeek;
     const m = profile.schedule.sessionMinutes;
-    return `${sk} – ${d} days – ${m} min`;
+    const style = (profile.schedule.style || "full_body").replaceAll("_","/");
+    if(profile.stage.mode === "pregnant" && profile.stage.dueDate){
+      const pp = Number(profile.stage.postpartumPlanWeeks || 0);
+      return `Pregnancy → due date + PP ${pp}w – ${d}d/wk – ${m}min – ${style}`;
+    }
+    if(profile.stage.mode === "postpartum"){
+      const pp = Number(profile.stage.postpartumPlanWeeks || 24);
+      return `Postpartum (${pp}w) – ${d}d/wk – ${m}min – ${style}`;
+    }
+    if(profile.stage.mode === "preconception"){
+      return `Preconception (12w) – ${d}d/wk – ${m}min – ${style}`;
+    }
+    const first = plan.weeks?.[0]?.stageKey ? plan.weeks[0].stageKey.toUpperCase() : "PLAN";
+    return `${first} – ${d}d/wk – ${m}min – ${style}`;
   }
 
   function handleSavePlan(plan){
@@ -1225,7 +1512,7 @@
     saved.unshift(entry);
     saveSaved(saved);
     state.activeSavedId = entry.savedId;
-    route("saved");
+    route("history");
   }
 
   function handleExport(plan){
@@ -1245,32 +1532,65 @@
     setTimeout(()=>URL.revokeObjectURL(url), 5000);
   }
 
-  function renderSaved(){
+  function handleSaveWorkoutLog(plan, weekIdx, sessionIdx){
+  const logs = loadLogs();
+  const wk = plan.weeks?.[weekIdx];
+  if(!wk) return alert("Could not find that week in the plan.");
+  const session = wk.sessions?.[sessionIdx];
+  if(!session) return alert("Could not find that session in the selected week.");
+
+  const blocks = session.blocks.map((b,bIdx)=>{
+    const blkId = `logblk_${plan.id}_${weekIdx}_${sessionIdx}_${bIdx}`;
+    const blkEl = document.getElementById(blkId);
+    const setRows = blkEl ? $$(".set-row", blkEl) : [];
+    const sets = setRows.map(r=>({
+      reps: ($(".reps", r)?.value || "").trim(),
+      weight: ($(".weight", r)?.value || "").trim(),
+    })).filter(x=>x.reps || x.weight);
+    const notes = blkEl ? (($(".note", blkEl)?.value || "").trim()) : "";
+    return { exercise: b.exercise, sets, notes };
+  });
+
+  const entry = {
+    id: "log_" + Date.now(),
+    date: todayKey(),
+    planId: plan.id,
+    weekLabel: wk.label,
+    sessionName: session.name,
+    blocks
+  };
+  logs.unshift(entry);
+  saveLogs(logs);
+  alert("Saved workout log.");
+  route("history");
+}
+
+
+  function renderHistory(){
     const wrap = div();
 
     const saved = loadSaved();
+    const logs = loadLogs();
     const header = el("div",{class:"panel"},[
       el("div",{class:"hrow"},[
         el("div",{},[
-          el("h1",{},["Saved plans"]),
-          el("p",{},["Programs saved on this device (localStorage). Export JSON for backup or moving devices."])
+          el("h1",{},["History / Save"]),
+          el("p",{},["Saved programs + workout logs on this device."])
         ]),
         el("div",{class:"btnrow"},[
-          el("button",{class:"btn", type:"button", onclick:()=>route("wizard")},["Create new plan"]),
+          el("button",{class:"btn", type:"button", onclick:()=>route("profile")},["Edit profile / generate plan"]),
           el("button",{class:"btn", type:"button", onclick:()=>handleImportPrompt()},["Import JSON"]),
-          el("button",{class:"btn danger", type:"button", onclick:()=>{ if(confirm("Delete all saved plans on this device?")){ saveSaved([]); render(); } }},["Delete all"])
+          el("button",{class:"btn danger", type:"button", onclick:()=>{ if(confirm("Delete all saved plans AND logs on this device?")){ saveSaved([]); saveLogs([]); render(); } }},["Delete all"])
         ])
       ])
     ]);
     wrap.appendChild(header);
 
-    if(!saved.length){
-      wrap.appendChild(el("div",{class:"panel"},[
-        el("h2",{},["No saved plans yet"]),
-        el("p",{},["Generate a plan and use “Save to My Plans”."])
-      ]));
-      return wrap;
-    }
+    // Saved programs
+    wrap.appendChild(el("div",{class:"panel"},[
+      el("h2",{},["Saved programs"]),
+      el("p",{},[saved.length ? "" : "No saved programs yet. Generate a plan and use \"Save to My Plans\"."])
+    ].filter(Boolean)));
 
     saved.forEach(entry=>{
       const card = el("div",{class:"panel"},[
@@ -1281,7 +1601,7 @@
             entry.notes ? el("p",{},["Notes: "+entry.notes]) : null
           ].filter(Boolean)),
           el("div",{class:"btnrow"},[
-            el("button",{class:"btn primary", type:"button", onclick:()=>{ state.generatedPlan = entry.plan; state.profile = entry.profile; route("plan"); }},["Open"]),
+            el("button",{class:"btn primary", type:"button", onclick:()=>{ state.generatedPlan = entry.plan; state.profile = entry.profile; route("workout"); }},["Open"]),
             el("button",{class:"btn", type:"button", onclick:()=>downloadEntry(entry)},["Export JSON"]),
             el("button",{class:"btn danger", type:"button", onclick:()=>deleteEntry(entry.savedId)},["Delete"])
           ])
@@ -1294,21 +1614,102 @@
       wrap.appendChild(card);
     });
 
+    // Workout logs
+    wrap.appendChild(el("div",{class:"panel"},[
+      el("h2",{},["Workout logs"]),
+      el("p",{},[logs.length ? "" : "No workout logs yet. Use Workout → Track this workout to save."])
+    ].filter(Boolean)));
+
+    logs.slice(0,50).forEach(l=>{
+  const isEditing = state.editingLogId === l.id;
+
+  const card = el("div",{class:"panel"},[
+    el("div",{class:"hrow"},[
+      el("div",{},[
+        el("h3",{},[`${l.date} — ${l.sessionName}`]),
+        el("p",{},[`Week: ${l.weekLabel} • Plan: ${l.planId}`])
+      ]),
+      el("div",{class:"btnrow"},[
+        isEditing
+          ? el("button",{class:"btn primary", type:"button", onclick:()=>saveEditedLog(l.id)},["Save changes"])
+          : el("button",{class:"btn", type:"button", onclick:()=>{ state.editingLogId = l.id; render(); }},["Edit"]),
+        isEditing
+          ? el("button",{class:"btn", type:"button", onclick:()=>{ state.editingLogId = null; render(); }},["Cancel"])
+          : null,
+        el("button",{class:"btn danger", type:"button", onclick:()=>{ if(confirm("Delete this workout log?")){ deleteLog(l.id); } }},["Delete"])
+      ].filter(Boolean))
+    ]),
+  ]);
+
+  if(!isEditing){
+    card.appendChild(el("table",{class:"table"},[
+      el("thead",{},[el("tr",{},[
+        el("th",{},["Exercise"]),
+        el("th",{},["Sets"]),
+        el("th",{},["Details"]),
+        el("th",{},["Notes"]),
+      ])]),
+      el("tbody",{}, (l.blocks||[]).map((b,bi)=>{
+        const sets = Array.isArray(b.sets) ? b.sets : [];
+        const details = sets.map((s,i)=>`#${i+1} ${s.reps||""}${s.weight?` @ ${s.weight}`:""}`.trim()).join(" • ");
+        return el("tr",{},[
+          el("td",{},[b.exercise]),
+          el("td",{},[String(sets.length || "")]),
+          el("td",{},[details]),
+          el("td",{},[b.notes||""])
+        ]);
+      }))
+    ]));
+  }else{
+    (l.blocks||[]).forEach((b,bi)=>{
+      const blkId = `editlog_${l.id}_${bi}`;
+      const blk = el("div",{class:"panel", id:blkId, style:"padding:12px;margin-top:10px;"},[
+        el("div",{class:"hrow"},[
+          el("h3",{},[b.exercise]),
+          el("button",{class:"btn", type:"button", onclick:()=>addEditLogSetRow(blkId)},["Add set"])
+        ]),
+        el("div",{class:"setrows"})
+      ]);
+      card.appendChild(blk);
+      const rows = blk.querySelector(".setrows");
+      const sets = Array.isArray(b.sets) ? b.sets : [];
+      if(sets.length){
+        sets.forEach(()=>addEditLogSetRow(blkId));
+        $$(".set-row", rows).forEach((r,idx)=>{
+          $(".reps", r).value = sets[idx]?.reps || "";
+          $(".weight", r).value = sets[idx]?.weight || "";
+        });
+      }else{
+        addEditLogSetRow(blkId);
+      }
+      blk.appendChild(el("div",{class:"field", style:"margin-top:10px;"},[
+        el("label",{},["Notes"]),
+        el("input",{class:"note", type:"text", value:(b.notes||"")})
+      ]));
+    });
+  }
+
+  wrap.appendChild(card);
+});
+
     return wrap;
   }
 
   function formatQuickView(plan){
     const lines = [];
-    lines.push(`${plan.template} (${plan.stageKey.toUpperCase()})`);
-    lines.push(`Intensity: ${plan.dosage.intensity} | RIR main: ${plan.dosage.rirMain}`);
+    lines.push(`Weeks: ${plan.weeks?.length || 0} | Created: ${plan.createdAt}`);
     lines.push("");
-    for(const s of plan.sessions){
-      lines.push(s.name);
-      for(const b of s.blocks){
-        lines.push(`  - ${b.title}: ${b.exercise}`);
+    const showWeeks = (plan.weeks || []).slice(0,2);
+    for(const w of showWeeks){
+      lines.push(`${w.label} — ${w.template} (${w.stageKey.toUpperCase()})`);
+      lines.push(`Intensity: ${w.dosage?.intensity} | RIR main: ${w.dosage?.rirMain}`);
+      for(const s of (w.sessions||[])){
+        lines.push(`  ${s.name}`);
+        for(const b of (s.blocks||[])) lines.push(`    - ${b.title}: ${b.exercise}`);
       }
       lines.push("");
     }
+    if((plan.weeks||[]).length > 2) lines.push("… (open program to view all weeks)");
     return lines.join("\n");
   }
 
@@ -1329,6 +1730,13 @@
     const saved = loadSaved();
     const next = saved.filter(x=>x.savedId !== savedId);
     saveSaved(next);
+    render();
+  }
+
+  function deleteLog(logId){
+    const logs = loadLogs();
+    const next = logs.filter(x=>x.id !== logId);
+    saveLogs(next);
     render();
   }
 
@@ -1369,6 +1777,43 @@
     };
     input.click();
   }
+
+function addEditLogSetRow(blockContainerId){
+  const blk = document.getElementById(blockContainerId);
+  if(!blk) return;
+  const rows = blk.querySelector(".setrows");
+  if(!rows) return;
+  const row = el("div",{class:"set-row"},[
+    el("div",{class:"set-label"},["Set"]),
+    el("input",{class:"reps", type:"text", placeholder:"reps"}),
+    el("input",{class:"weight", type:"text", placeholder:"weight"}),
+    el("button",{class:"btn danger", type:"button", onclick:()=>{ row.remove(); renumberSetRows(rows); }},["✕"])
+  ]);
+  rows.appendChild(row);
+  renumberSetRows(rows);
+}
+
+function saveEditedLog(logId){
+  const logs = loadLogs();
+  const idx = logs.findIndex(x=>x.id===logId);
+  if(idx<0) return;
+  const log = logs[idx];
+  const nextBlocks = (log.blocks||[]).map((b,bi)=>{
+    const blkId = `editlog_${logId}_${bi}`;
+    const blkEl = document.getElementById(blkId);
+    const setRows = blkEl ? $$(".set-row", blkEl) : [];
+    const sets = setRows.map(r=>({
+      reps: ($(".reps", r)?.value || "").trim(),
+      weight: ($(".weight", r)?.value || "").trim(),
+    })).filter(x=>x.reps || x.weight);
+    const notes = blkEl ? (($(".note", blkEl)?.value || "").trim()) : (b.notes||"");
+    return { ...b, sets, notes };
+  });
+  logs[idx] = { ...log, blocks: nextBlocks, editedAt: new Date().toISOString() };
+  saveLogs(logs);
+  state.editingLogId = null;
+  render();
+}
 
   function renderAbout(){
     const wrap = div("panel");

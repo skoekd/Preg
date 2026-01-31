@@ -7,7 +7,7 @@
   const $ = (sel, el=document) => el.querySelector(sel);
   const $$ = (sel, el=document) => Array.from(el.querySelectorAll(sel));
 
-  const ROUTES = ["workout","profile","history","about"];
+  const ROUTES = ["workout","profile","history","about","setup"];
   let state = {
     route: "workout",
     wizardStep: 0,
@@ -40,6 +40,10 @@
 
       goals: ["maintain_strength","reduce_pain"],
 
+      // User-driven difficulty preference. Used to gently adjust volume/intensity guidance.
+      // Values: "standard" | "slightly_harder" | "much_harder"
+      difficulty: { preference:"standard", notes:"" },
+
       tone: "direct",
       lifestyle: { sleepHours: 7, workDemands:"mixed", activity:"moderate", stress:"moderate", support:"moderate" },
     };
@@ -47,6 +51,12 @@
 
   // --- Data: symptom + diagnoses sets (with dropdowns)
   const SEVERITY = ["none","mild","moderate","severe"];
+
+  function maxSev(a,b){
+    const ia = SEVERITY.indexOf(a||"none");
+    const ib = SEVERITY.indexOf(b||"none");
+    return SEVERITY[Math.max(0, ia, ib)];
+  }
   const SYMPTOMS = [
     {key:"pelvic_pressure", label:"Pelvic heaviness/pressure", affects:["IAP","ROM","FATIGUE"]},
     {key:"leakage", label:"Leaking with effort/cough/sneeze", affects:["IAP","FATIGUE"]},
@@ -87,6 +97,8 @@
       {name:"Goblet Squat", tags:{axial:2, iap:2, balance:2, position:"standing", impact:0, isometric:0, equip:["dumbbells","gym_full","home_db"]}},
       {name:"Box Goblet Squat", tags:{axial:1, iap:2, balance:1, position:"standing", impact:0, isometric:0, equip:["dumbbells","gym_full","home_db"]}},
       {name:"Leg Press (machine)", tags:{axial:1, iap:1, balance:0, position:"seated", impact:0, isometric:0, equip:["gym_full"]}},
+      {name:"Belt Squat (machine)", tags:{axial:1, iap:1, balance:0, position:"standing", impact:0, isometric:0, equip:["gym_full"]}},
+      {name:"Hack Squat (machine)", tags:{axial:1, iap:1, balance:0, position:"standing", impact:0, isometric:0, equip:["gym_full"]}},
       {name:"Sit-to-Stand (bench)", tags:{axial:0, iap:0, balance:0, position:"seated", impact:0, isometric:0, equip:["home_db","bands_only","gym_full"]}},
     ],
     hinge: [
@@ -95,6 +107,7 @@
       {name:"Romanian Deadlift (DB)", tags:{axial:1, iap:2, balance:2, position:"standing", impact:0, isometric:0, equip:["home_db","gym_full","dumbbells"]}},
       {name:"Supported DB RDL (hands on bench)", tags:{axial:1, iap:1, balance:1, position:"standing", impact:0, isometric:0, equip:["home_db","gym_full","dumbbells"]}},
       {name:"Cable Pull-Through", tags:{axial:0, iap:1, balance:1, position:"standing", impact:0, isometric:0, equip:["gym_full"]}},
+      {name:"Elevated Deadlift (blocks/handles)", tags:{axial:1, iap:2, balance:1, position:"standing", impact:0, isometric:0, equip:["gym_full","barbell"]}},
       {name:"Hip Hinge Drill (dowel/wall)", tags:{axial:0, iap:0, balance:0, position:"standing", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
     ],
     push: [
@@ -102,6 +115,7 @@
       {name:"Incline DB Press", tags:{iap:1, position:"incline", grip:2, impact:0, isometric:0, equip:["home_db","gym_full","dumbbells"]}},
       {name:"Landmine Press", tags:{iap:1, position:"standing", grip:1, impact:0, isometric:0, equip:["gym_full"]}},
       {name:"Seated Machine Press", tags:{iap:1, position:"seated", grip:1, impact:0, isometric:0, equip:["gym_full"]}},
+      {name:"Seated DB Press", tags:{iap:1, position:"seated", grip:2, impact:0, isometric:0, equip:["home_db","gym_full","dumbbells"]}},
       {name:"Push-up (incline)", tags:{iap:1, position:"standing", grip:1, impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
     ],
     pull: [
@@ -112,15 +126,20 @@
       {name:"One-Arm DB Row (bench-supported)", tags:{iap:1, balance:1, grip:2, position:"supported", abdomenPressure:0, impact:0, isometric:0, equip:["gym_full","home_db","dumbbells"]}},
       {name:"Seated Machine Row", tags:{iap:1, balance:0, grip:1, position:"seated", abdomenPressure:0, impact:0, isometric:0, equip:["gym_full"]}},
       {name:"Seated Cable Row", tags:{iap:1, balance:0, grip:1, position:"seated", impact:0, isometric:0, equip:["gym_full"]}},
+      {name:"Cable Row (neutral grip)", tags:{iap:1, balance:0, grip:1, position:"seated", impact:0, isometric:0, equip:["gym_full"]}},
       {name:"Lat Pulldown", tags:{iap:1, balance:0, grip:1, position:"seated", impact:0, isometric:0, equip:["gym_full"]}},
+      {name:"Band Lat Pulldown (door anchor)", tags:{iap:0, balance:0, grip:0, position:"seated", impact:0, isometric:0, equip:["bands_only","home_db"]}},
       {name:"Band Row", tags:{iap:0, balance:0, grip:0, position:"standing", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
     ],
     carry_core: [
       {name:"Suitcase Carry", tags:{iap:2, position:"standing", carry:2, grip:2, impact:0, isometric:0, equip:["home_db","gym_full","dumbbells"]}},
       {name:"Farmer Carry (light)", tags:{iap:2, position:"standing", carry:2, grip:2, impact:0, isometric:0, equip:["home_db","gym_full","dumbbells"]}},
       {name:"Pallof Press (anti-rotation)", tags:{iap:0, position:"standing", carry:0, grip:0, impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Tall-Kneeling Pallof Press", tags:{iap:0, position:"supported", carry:0, grip:0, impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
       {name:"Side Plank (modified)", tags:{iap:1, position:"side", carry:0, grip:0, impact:0, isometric:2, equip:["bands_only","home_db","gym_full"]}},
       {name:"Dead Bug (no doming)", tags:{iap:0, position:"supine", carry:0, grip:0, impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Bird Dog (slow)", tags:{iap:0, position:"supported", carry:0, grip:0, impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
+      {name:"90/90 Breathing (rib stack)", tags:{iap:0, position:"supine", carry:0, grip:0, impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
     ],
     accessories: [
       {name:"Hip Thrust (bench)", tags:{iap:1, position:"supine", impact:0, isometric:0, equip:["gym_full","home_db"]}},
@@ -131,6 +150,10 @@
       {name:"Wall Sit (short)", tags:{iap:1, position:"standing", impact:0, isometric:3, equip:["bands_only","home_db","gym_full"]}},
       {name:"Band Pull-Aparts", tags:{iap:0, position:"standing", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
       {name:"Face Pull", tags:{iap:0, position:"standing", impact:0, isometric:0, equip:["gym_full"]}},
+      {name:"Cat-Cow (gentle)", tags:{iap:0, position:"supported", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Hip Flexor Stretch (supported)", tags:{iap:0, position:"supported", impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Thoracic Opener (side-lying)", tags:{iap:0, position:"side", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Calf Raises", tags:{iap:0, position:"standing", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
     ]
   };
 
@@ -291,10 +314,28 @@
       });
     }
 
-    if(structure === "upper_lower") return upperLower();
-    if(structure === "ab_split") return abSplit();
-    if(structure === "abc_rotation") return abcRotation();
-    return fullBody();
+    let sessions;
+    if(structure === "upper_lower") sessions = upperLower();
+    else if(structure === "ab_split") sessions = abSplit();
+    else if(structure === "abc_rotation") sessions = abcRotation();
+    else sessions = fullBody();
+
+    // Add a short warm-up and a mobility finish for pregnancy/postpartum variants.
+    // Keep this low-text and consistent across sessions.
+    const addWarmup = (variant.startsWith("pregnancy") || variant.startsWith("postpartum"));
+    return sessions.map((s, idx)=>{
+      const blocks = [...s.blocks];
+      if(addWarmup){
+        blocks.unshift({title:"Warm-up (breathing + mobility)", pattern:"carry_core", forced:"90/90 Breathing (rib stack)"});
+      }
+      // Prioritize more stretching/mobility in 3rd trimester and late pregnancy variants.
+      if(variant === "pregnancy_min"){
+        blocks.push({title:"Mobility / stretch (finish)", pattern:"accessories", forced:(idx % 2 === 0 ? "Hip Flexor Stretch (supported)" : "Thoracic Opener (side-lying)")});
+      } else if(variant === "pregnancy"){
+        blocks.push({title:"Optional mobility (finish)", pattern:"accessories", forced:"Cat-Cow (gentle)", optional:true});
+      }
+      return {...s, blocks};
+    });
   }
 
   function makeTemplateRehab(days){
@@ -556,8 +597,55 @@
     if(dials.DENSITY >= 2 || dials.FATIGUE >= 6) rest = "increase rest; avoid circuits";
     // Negative DENSITY means: can tolerate slightly denser work (useful for GDM).
     if(dials.DENSITY <= -1 && dials.FATIGUE <= 4) rest = "60–120s; gentle circuits acceptable (not exhausting)";
+    // User difficulty preference: conservative, stage-appropriate nudges.
+    const pref = profile.difficulty?.preference || "standard";
+    if(pref === "slightly_harder"){
+      notes.push("You marked workouts as a bit too easy: if symptoms are stable, add 1 set to the first 1–2 main lifts OR add 1 accessory set.");
+      // Slightly more challenging guidance: nudge intensity band up one step if very low.
+      if(intensity === "very_low") intensity = "low";
+      // Slightly reduce RIR targets (still pregnancy-safe).
+      rirMain = bumpRIRDown(rirMain, 1);
+      rirAcc = bumpRIRDown(rirAcc, 1);
+    }
+    if(pref === "much_harder"){
+      notes.push("You asked for a harder plan: prioritize perfect technique and symptom-free work. If stable for 2 weeks, add 1 set on most lifts and progress load slowly.");
+      if(intensity === "very_low") intensity = "low";
+      if(intensity === "low") intensity = "low_to_moderate";
+      rirMain = bumpRIRDown(rirMain, 2);
+      rirAcc = bumpRIRDown(rirAcc, 1);
+    }
+
+    // Adaptive progression/regression from weekly check-ins.
+    const prog = profile._prog || null;
+    if(prog?.regress){
+      notes.push("Auto-adjust: hold/regress this week (symptoms flagged last week). Reduce load 10–20% and prioritize breathing & control.");
+      rirMain = bumpRIRUp(rirMain, 1);
+      rirAcc = bumpRIRUp(rirAcc, 1);
+    } else if(prog?.progressStep){
+      const s = Math.min(3, Math.max(1, Number(prog.progressStep||1)));
+      notes.push(`Auto-adjust: progressive week (+${s} step). If symptom-free, add 1 set to 1–2 key lifts OR add a small load bump (1–2%).`);
+      rirMain = bumpRIRDown(rirMain, Math.min(1,s));
+    }
+
     // GDM extra note already above
     return { intensity, rirMain, rirAcc, base: baseDosage, rest, notes };
+  }
+
+  function bumpRIRDown(rirStr, by){
+    // rirStr format: "a-b". Decrease both ends by 'by', clamped to >=0.
+    const m = String(rirStr||"").match(/(\d+)\s*-\s*(\d+)/);
+    if(!m) return rirStr;
+    const a = Math.max(0, Number(m[1]) - by);
+    const b = Math.max(0, Number(m[2]) - by);
+    return `${a}-${b}`;
+  }
+
+  function bumpRIRUp(rirStr, by){
+    const m = String(rirStr||"").match(/(\d+)\s*-\s*(\d+)/);
+    if(!m) return rirStr;
+    const a = Math.max(0, Number(m[1]) + by);
+    const b = Math.max(a, Number(m[2]) + by);
+    return `${a}-${b}`;
   }
 
   // Generate a single-week plan for a given (possibly time-shifted) profile.
@@ -639,8 +727,10 @@
     const now = new Date();
 
     function addWeek(label, tempProfile, weekSeed){
+      // Store a full snapshot so we can regenerate adaptively based on weekly check-ins.
+      const snap = deepClone(tempProfile);
       const weekPlan = generateWeekPlan(tempProfile, weekSeed);
-      weeks.push({ label, startDate: labelStartDate(now, weekSeed), profileSnapshot: snapshotStage(tempProfile), ...weekPlan });
+      weeks.push({ label, startDate: labelStartDate(now, weekSeed), stageSnapshot: snapshotStage(tempProfile), profileSnapshot: snap, weekSeed, ...weekPlan });
     }
 
     // Pregnant mode: build pregnancy weeks until due date (if set), else default to 4 weeks.
@@ -712,6 +802,7 @@
   // --- Persistence
   const LS_KEY = "nurturestrength_saved_plans_v1";
   const LS_LOGS = "nurturestrength_workout_logs_v1";
+  const LS_CHECKINS = "nurturestrength_week_checkins_v1";
   function loadSaved(){
     try{ return JSON.parse(localStorage.getItem(LS_KEY) || "[]"); }catch(e){ return []; }
   }
@@ -724,6 +815,23 @@
   }
   function saveLogs(arr){
     localStorage.setItem(LS_LOGS, JSON.stringify(arr));
+  }
+
+  function loadCheckins(){
+    try{ return JSON.parse(localStorage.getItem(LS_CHECKINS) || "[]"); }catch(e){ return []; }
+  }
+  function saveCheckins(arr){
+    localStorage.setItem(LS_CHECKINS, JSON.stringify(arr));
+  }
+  function getCheckin(planId, weekIndex){
+    const all = loadCheckins();
+    return all.find(c=>c.planId===planId && c.weekIndex===weekIndex) || null;
+  }
+  function upsertCheckin(entry){
+    const all = loadCheckins();
+    const i = all.findIndex(c=>c.planId===entry.planId && c.weekIndex===entry.weekIndex);
+    if(i>=0) all[i] = entry; else all.unshift(entry);
+    saveCheckins(all);
   }
   function todayKey(){
     const d = new Date();
@@ -750,11 +858,94 @@
     });
 
     if(state.route === "workout") root.appendChild(renderWorkout());
-    if(state.route === "profile") root.appendChild(renderWizard());
+    if(state.route === "profile") root.appendChild(renderProfileSummary());
+    if(state.route === "setup") root.appendChild(renderSetup());
     if(state.route === "history") root.appendChild(renderHistory());
     if(state.route === "about") root.appendChild(renderAbout());
   }
 
+  // --- Profile summary (high-level, low-text)
+  function renderProfileSummary(){
+    const p = state.profile;
+    const sk = stageKey(p);
+    const cont = div("panel");
+    cont.appendChild(el("h1",{},["Profile"]));
+
+    const summary = div("grid2");
+    summary.appendChild(card("Stage", stageSummaryText(p)));
+    summary.appendChild(card("Program", `${programStyleLabel(p.schedule.style)} • ${p.schedule.daysPerWeek} days/week • ${p.schedule.sessionMinutes} min`));
+    summary.appendChild(card("Equipment", equipmentLabel(p.equipment.set)));
+    summary.appendChild(card("Goals", goalLabels(p.goals).join(" • ")));
+    cont.appendChild(summary);
+
+    // Quick controls
+    const quick = div("panel");
+    quick.appendChild(el("h2",{},["Quick updates"]));
+    quick.appendChild(el("div",{class:"row"},[
+      el("label",{},["Week of pregnancy/postpartum"]),
+      stageWeekQuickEditor(p)
+    ]));
+    quick.appendChild(el("div",{class:"row"},[
+      el("label",{},["If workouts feel too easy (optional)"]),
+      selectInput(p.difficulty.preference,[
+        {v:"standard",t:"Standard"},
+        {v:"slightly_harder",t:"Slightly harder"},
+        {v:"much_harder",t:"Much harder"},
+      ], (v)=>{ p.difficulty.preference=v; render(); })
+    ]));
+    quick.appendChild(el("div",{class:"row"},[
+      el("label",{},["Notes (what you'd like adjusted)"]),
+      textareaInput(p.difficulty.notes, (v)=>{ p.difficulty.notes=v; })
+    ]));
+    cont.appendChild(quick);
+
+    const actions = div("btnrow");
+    const edit = el("button",{class:"btn primary",type:"button"},["Edit setup questionnaire"]);
+    edit.onclick = ()=>{ state.route="setup"; render(); };
+    const gen = el("button",{class:"btn",type:"button"},["Generate / refresh plan"]);
+    gen.onclick = ()=>{ state.generatedPlan = generatePlan(state.profile); state.activeWeekIndex=0; state.route="workout"; render(); };
+    actions.appendChild(edit);
+    actions.appendChild(gen);
+    cont.appendChild(actions);
+
+    // Light diagnostic: show key constraints in collapsible section
+    const details = el("details",{class:"details"},[
+      el("summary",{},["View constraints & safety notes"]),
+      renderConstraintsSnapshot(p)
+    ]);
+    cont.appendChild(details);
+    return cont;
+  }
+
+  // --- Setup page: all questions in one place, split into collapsible sections
+  function renderSetup(){
+    const p = state.profile;
+    const container = div("panel");
+    container.appendChild(el("h1",{},["Setup questionnaire"]));
+    container.appendChild(el("p",{class:"muted"},["Everything is here in one place. Open only the sections you need."]));
+
+    const sections = div();
+    sections.appendChild(sectionDetails("Safety & provider restrictions", stepSafety()));
+    sections.appendChild(sectionDetails("Stage", stepStage()));
+    sections.appendChild(sectionDetails("Schedule", stepSchedule()));
+    sections.appendChild(sectionDetails("Equipment", stepEquipment()));
+    sections.appendChild(sectionDetails("Training background", stepTraining()));
+    sections.appendChild(sectionDetails("Issues & limitations", stepIssues()));
+    sections.appendChild(sectionDetails("Goals & lifestyle", stepGoals()));
+    container.appendChild(sections);
+
+    const actions = div("btnrow");
+    const back = el("button",{class:"btn",type:"button"},["Back to profile"]);
+    back.onclick = ()=>{ state.route="profile"; render(); };
+    const gen = el("button",{class:"btn primary",type:"button"},["Generate / refresh plan"]);
+    gen.onclick = ()=>{ state.generatedPlan = generatePlan(state.profile); state.activeWeekIndex=0; state.route="workout"; render(); };
+    actions.appendChild(back);
+    actions.appendChild(gen);
+    container.appendChild(actions);
+    return container;
+  }
+
+  // --- (Legacy) Wizard kept for reference but no longer routed.
   function renderWizard(){
     const p = state.profile;
 
@@ -1275,6 +1466,365 @@
     return map[k] || "";
   }
 
+  function renderRunGateCard(runGate){
+    const badgeClass = runGate.ready ? "badge ok" : "badge";
+    const card = el("details",{open:false, class:"details"},[
+      el("summary",{},[
+        "Return-to-running / impact gate ",
+        el("span",{class:"summary-note"},[`${runGate.status}`])
+      ]),
+      el("div",{class:"panel"},[
+        el("div",{class: badgeClass, style:"margin-bottom:10px"},[
+          runGate.ready ? "Ready to start run-walk (if symptoms stay stable)" : "Not yet — build stability first"
+        ]),
+        runGate.reasons?.length ? el("ul",{}, runGate.reasons.map(r=>el("li",{},[r]))) : null,
+        el("h3",{},["This week"]),
+        el("ul",{}, (runGate.plan||[]).map(x=>el("li",{},[x])))
+      ].filter(Boolean))
+    ]);
+    return card;
+  }
+
+  // --- Adaptive week regeneration (symptom-aware)
+  function getAdaptiveWeek(plan, weekIndex){
+    try{
+      const base = plan.weeks[weekIndex];
+      if(!base) return null;
+      const profile = deepClone(base.profileSnapshot || state.profile);
+
+      // Pull previous week check-in and reflect it into the next week's symptoms.
+      const prev = getCheckin(plan.id, weekIndex-1);
+      if(prev){
+        const mapSym = (key, sev)=>{
+          if(!sev || sev==="none") return;
+          profile.symptoms[key] = { severity: sev, notes: "" };
+        };
+        mapSym("pelvic_pressure", prev.pelvic_pressure);
+        mapSym("leakage", prev.leakage);
+        mapSym("doming", prev.doming);
+        mapSym("pgp", prev.pgp);
+        mapSym("low_back", prev.low_back);
+        mapSym("fatigue", prev.fatigue);
+      }
+
+      // Progression credits: every 2 “green” weeks -> one progression step.
+      let green = 0;
+      let regress = false;
+      for(let i=0;i<weekIndex;i++){
+        const c = getCheckin(plan.id, i);
+        if(!c) continue;
+        const redish = [c.pelvic_pressure,c.leakage,c.doming].some(v=>v==="moderate"||v==="severe");
+        if(redish){
+          // reset progression and flag regression for the immediate next week
+          green = 0;
+          if(i === weekIndex-1) regress = true;
+          continue;
+        }
+        const ok = [c.pelvic_pressure,c.leakage,c.doming,c.pgp,c.low_back].every(v=>!v || v==="none"||v==="mild") && !c.delayedSymptoms;
+        const adherenceOk = (c.adherencePct==null) || (Number(c.adherencePct) >= 70);
+        if(ok && adherenceOk) green++;
+      }
+      const step = Math.floor(green/2);
+      profile._prog = { regress, progressStep: regress ? 0 : step };
+
+      // Regenerate this week with the updated profile.
+      const regenerated = generateWeekPlan(profile, base.weekSeed || weekIndex);
+
+      // Narrative helper: title + short explanation.
+      const narrative = buildWeekNarrative(plan.id, weekIndex, profile);
+
+      // Postpartum return-to-running / impact gate module (uses same symptom engine).
+      const runGate = buildRunningImpactGate(plan.id, weekIndex, profile);
+
+      return { ...base, ...regenerated, narrative, runGate };
+    }catch(e){
+      return null;
+    }
+  }
+
+  // --- Narrative copy system (auto-generated week title + explanation)
+  function buildWeekNarrative(planId, weekIndex, p){
+    const sk = stageKey(p);
+    const prev = getCheckin(planId, weekIndex-1);
+
+    const flags = {
+      red: prev ? [prev.pelvic_pressure, prev.leakage, prev.doming].some(v=>v==="moderate"||v==="severe") : false,
+      yellow: prev ? ([prev.pgp, prev.low_back, prev.fatigue].some(v=>v==="moderate"||v==="severe") || !!prev.delayedSymptoms) : false,
+      green: prev ? ([prev.pelvic_pressure, prev.leakage, prev.doming, prev.pgp, prev.low_back].every(v=>!v||v==="none"||v==="mild") && !prev.delayedSymptoms && (prev.adherencePct==null || Number(prev.adherencePct)>=70)) : true,
+    };
+
+    // Helper: pregnancy weeks remaining
+    let weeksLeft = null;
+    if(p.stage.mode === "pregnant" && p.stage.dueDate){
+      const due = new Date(p.stage.dueDate);
+      if(!isNaN(due.getTime())){
+        const now = new Date();
+        weeksLeft = Math.max(0, Math.ceil((due.getTime()-now.getTime())/(1000*60*60*24*7)));
+      }
+    }
+
+    // Build a short, human title + explanation.
+    const out = { title:"", explanation:"" };
+    const wkNum = weekIndex + 1;
+
+    if(p.stage.mode === "pregnant"){
+      // Phase naming
+      let phase = "Strength maintenance";
+      if(sk === "t1") phase = "Consistency & energy";
+      if(sk === "t2") phase = "Steady strength";
+      if(sk === "t3") phase = "Stability & comfort";
+      if(weeksLeft != null && weeksLeft <= 2) phase = "Finish-line taper";
+
+      if(flags.red) out.title = `Week ${wkNum} — Recovery & control`;
+      else out.title = `Week ${wkNum} — ${phase}`;
+
+      const expl = [];
+      if(weeksLeft != null && weeksLeft <= 2){
+        expl.push("Close to due date: keep loads submaximal, avoid grinders, and prioritize breathing, posture, and mobility.");
+      } else if(sk === "t3"){
+        expl.push("Third trimester priorities: supported patterns, low abdominal pressure, hip/glute strength, and daily mobility.");
+      } else if(sk === "t2"){
+        expl.push("Second trimester priorities: maintain strength with steady breathing; progress only if symptom-free.");
+      } else if(sk === "t1"){
+        expl.push("First trimester priorities: consistency and energy management. Stop early if nausea/fatigue ramps up.");
+      }
+      if(flags.red) expl.push("Last week’s check-in flagged symptoms. This week is a hold/regress week (reduce load 10–20%, increase RIR, and choose the most supported options)." );
+      else if(prev && prev.delayedSymptoms) expl.push("You reported symptoms later that day/next morning. Hold progression and keep effort truly submaximal.");
+      else if(flags.yellow) expl.push("Fatigue/pain was elevated last week. Hold progression and keep sessions short and easy to recover from.");
+      else if(flags.green) expl.push("Symptoms looked stable. If this week stays stable, the app will allow a small progression next week.");
+      out.explanation = expl.join(" ");
+      return out;
+    }
+
+    // Postpartum
+    const ppw = p.stage.weeksPostpartum || 0;
+    let phase = "Rebuild";
+    if(sk === "pp0_6") phase = "Restore & reconnect";
+    else if(sk === "pp6_16") phase = "Capacity rebuild";
+    else if(sk === "pp4_12m") phase = "Reload";
+    else if(sk === "pp12m_plus") phase = "Performance";
+
+    out.title = flags.red ? `Postpartum Week ${ppw+1} — Hold & recover` : `Postpartum Week ${ppw+1} — ${phase}`;
+    const expl = [];
+    if(sk === "pp0_6") expl.push("Focus: breathing, pelvic floor coordination, and gentle strength (only if medically cleared)." );
+    if(sk === "pp6_16") expl.push("Focus: rebuild tolerance in squat/hinge/push/pull with controlled loads and symptom-free effort." );
+    if(sk === "pp4_12m") expl.push("Focus: progressive strength return with careful pelvic/core pressure management." );
+    if(flags.red) expl.push("Symptoms were flagged last week. We’ll regress and stabilize before progressing again." );
+    else if(flags.green) expl.push("Stable week trend: you can earn gradual progressions." );
+    out.explanation = expl.join(" ");
+    return out;
+  }
+
+  // --- Postpartum return-to-running / impact gate (engine-based)
+  function buildRunningImpactGate(planId, weekIndex, p){
+    const wantsRun = (p.goals||[]).includes("return_run");
+    const modeOk = (p.stage.mode === "postpartum") && !p.hardLimits.avoidRunning;
+    if(!wantsRun || !modeOk) return null;
+
+    const ppWeeks = Number(p.stage.weeksPostpartum||0);
+    const recent = [];
+    for(let i=Math.max(0, weekIndex-3); i<weekIndex; i++){
+      const c = getCheckin(planId, i);
+      if(c) recent.push(c);
+    }
+    const hasData = recent.length >= 2;
+    const symptomFree = hasData ? recent.slice(-2).every(c=>{
+      const pelvicOk = [c.pelvic_pressure,c.leakage,c.doming].every(v=>!v||v==="none"||v==="mild");
+      const painOk = [c.pgp,c.low_back].every(v=>!v||v==="none"||v==="mild");
+      return pelvicOk && painOk && !c.delayedSymptoms;
+    }) : false;
+
+    // Minimum time gate: conservative baseline.
+    const timeGate = ppWeeks >= 12;
+
+    const ready = timeGate && symptomFree;
+    const status = ready ? "Ready" : "Not yet";
+
+    const reasons = [];
+    if(!timeGate) reasons.push("Most people are not ready for running/impact before ~12 weeks postpartum.");
+    if(!hasData) reasons.push("Complete 2 weekly check-ins so the app can confirm stability.");
+    if(hasData && !symptomFree) reasons.push("Recent check-ins show pelvic/core symptoms or pain above mild — we’ll stabilize first.");
+
+    const plan = [];
+    if(ready){
+      plan.push("Run/Walk 2x/week on non-lifting days: 5 min brisk walk → 8 rounds of 1 min easy jog / 1–2 min walk → 5 min walk.");
+      plan.push("Stop if leakage, heaviness, doming, sharp pain, or symptoms worsen later that day.");
+      plan.push("If symptom-free for 2 weeks, progress by adding 1–2 jog minutes total per session.");
+    } else {
+      plan.push("For now: brisk walking, incline walking, cycling, or low-impact cardio 2–3x/week (20–30 min) while strength rebuilds.");
+      plan.push("Focus on calf/foot strength + single-leg control in strength sessions.");
+    }
+
+    return { status, ready, reasons, plan };
+  }
+
+  function openWeeklyCheckin(planId, weekIndex){
+    // 30-second check-in: 5 questions.
+    // We still store into the same canonical fields used by the engine:
+    // pelvic_pressure, leakage, doming, pgp, low_back, fatigue, adherencePct
+    const existing = getCheckin(planId, weekIndex) || {
+      pelvic_pressure:"none",
+      leakage:"none",
+      doming:"none",
+      pgp:"none",
+      low_back:"none",
+      fatigue:"none",
+      adherencePct:80,
+      // New: delayed symptoms later that day / next morning (pelvic/core/pain flare)
+      delayedSymptoms:false,
+    };
+
+    // UI state for combined questions
+    const ui = {
+      pelvicSeverity: maxSev(existing.pelvic_pressure, existing.leakage),
+      pelvicType: (existing.pelvic_pressure!="none" && existing.leakage!="none") ? "both" : (existing.leakage!="none" ? "leakage" : (existing.pelvic_pressure!="none" ? "heaviness" : "none")),
+      delayed: existing.delayedSymptoms ? "yes" : "no",
+      doming: existing.doming || "none",
+      painSeverity: maxSev(existing.pgp, existing.low_back),
+      painType: (existing.pgp!="none" && existing.low_back!="none") ? "both" : (existing.pgp!="none" ? "pelvis" : (existing.low_back!="none" ? "back" : "none")),
+      recovery: (existing.fatigue==="none"?"great":(existing.fatigue==="mild"?"ok":"struggling")),
+      completed: null,
+    };
+
+    const overlay = el("div",{class:"modal-overlay"},[]);
+    const modal = el("div",{class:"modal"},[
+      el("h2",{},["Weekly check-in (30 sec)"]),
+      el("p",{class:"muted", style:"margin-top:-6px"},["This updates next week automatically."])
+    ]);
+
+    // Determine default completed workouts from adherencePct and current plan settings
+    const days = Math.max(1, Math.min(6, Number(state.profile.schedule.daysPerWeek||3)));
+    ui.completed = Math.round(((existing.adherencePct||0)/100) * days);
+
+    const q = (title, body)=>{
+      const box = el("div",{class:"qbox"},[ el("div",{class:"qtitle"},[title]), body ]);
+      return box;
+    };
+
+    const seg = (value, options, onChange)=>{
+      const wrap = el("div",{class:"seg"},[]);
+      options.forEach(optv=>{
+        const b = el("button",{class:"segbtn" + (value===optv?" active":""), type:"button"},[pretty(optv)]);
+        b.onclick = ()=>{
+          value = optv;
+          onChange(optv);
+          // refresh active states
+          $$(".segbtn", wrap).forEach(btn=>btn.classList.remove("active"));
+          b.classList.add("active");
+        };
+        wrap.appendChild(b);
+      });
+      return wrap;
+    };
+
+    // Q1 Pelvic symptoms: severity + type
+    const pelvicBox = div();
+    pelvicBox.appendChild(seg(ui.pelvicSeverity, ["none","mild","moderate","severe"], (v)=>{ ui.pelvicSeverity=v; renderExtra(); }));
+    const typeRow = el("div",{class:"row", style:"margin-top:10px"},[
+      el("label",{},["Type (if any)"]),
+      selectInput(ui.pelvicType,[{v:"none",t:"None"},{v:"leakage",t:"Leakage"},{v:"heaviness",t:"Heaviness"},{v:"both",t:"Both"}], (v)=>{ ui.pelvicType=v; })
+    ]);
+    const extra = el("div",{id:"pelvicExtra"},[]);
+    function renderExtra(){
+      extra.innerHTML = "";
+      if(ui.pelvicSeverity!=="none") extra.appendChild(typeRow);
+    }
+    renderExtra();
+    pelvicBox.appendChild(extra);
+
+    // Delayed symptom flare (important for postpartum running/impact gating and progression)
+    const delayedRow = el("div",{class:"row", style:"margin-top:10px"},[
+      el("label",{},["Did symptoms show up or worsen later that day / next morning?"]),
+      selectInput(ui.delayed,[{v:"no",t:"No"},{v:"yes",t:"Yes"}], (v)=>{ ui.delayed=v; })
+    ]);
+    pelvicBox.appendChild(delayedRow);
+    modal.appendChild(q("1) Pelvic symptoms during workouts?", pelvicBox));
+
+    // Q2 Doming
+    modal.appendChild(q("2) Any doming/coning?", seg(ui.doming, ["none","mild","moderate","severe"], (v)=>{ ui.doming=v; })));
+
+    // Q3 Pain: severity + location
+    const painBox = div();
+    painBox.appendChild(seg(ui.painSeverity,["none","mild","moderate","severe"], (v)=>{ ui.painSeverity=v; renderPainExtra(); }));
+    const painExtra = el("div",{id:"painExtra"},[]);
+    const painTypeRow = el("div",{class:"row", style:"margin-top:10px"},[
+      el("label",{},["Where?" ]),
+      selectInput(ui.painType,[{v:"none",t:"—"},{v:"pelvis",t:"Pelvis (PGP/SPD)"},{v:"back",t:"Low back"},{v:"both",t:"Both"}], (v)=>{ ui.painType=v; })
+    ]);
+    function renderPainExtra(){
+      painExtra.innerHTML = "";
+      if(ui.painSeverity!=="none") painExtra.appendChild(painTypeRow);
+    }
+    renderPainExtra();
+    painBox.appendChild(painExtra);
+    modal.appendChild(q("3) Pain limiting training?", painBox));
+
+    // Q4 Recovery
+    const recMap = { great:"Great", ok:"Okay", struggling:"Struggling" };
+    const recWrap = el("div",{class:"seg"},[]);
+    Object.keys(recMap).forEach(k=>{
+      const b = el("button",{class:"segbtn" + (ui.recovery===k?" active":""), type:"button"},[recMap[k]]);
+      b.onclick = ()=>{
+        ui.recovery = k;
+        $$(".segbtn", recWrap).forEach(btn=>btn.classList.remove("active"));
+        b.classList.add("active");
+      };
+      recWrap.appendChild(b);
+    });
+    modal.appendChild(q("4) Recovery this week?", recWrap));
+
+    // Q5 Completed workouts
+    const doneRow = el("div",{class:"row"},[
+      el("label",{},["5) Workouts completed" ]),
+      el("input",{type:"range", min:"0", max:String(days), value:String(ui.completed||0), oninput:(e)=>{
+        ui.completed = Number(e.target.value||0);
+        const out = document.getElementById("completedOut");
+        if(out) out.textContent = `${ui.completed}/${days}`;
+      }})
+    ]);
+    const doneBox = div();
+    doneBox.appendChild(doneRow);
+    doneBox.appendChild(el("div",{class:"muted", style:"margin-top:6px"},[
+      el("span",{id:"completedOut"},[`${ui.completed}/${days}`])
+    ]));
+    modal.appendChild(q("", doneBox));
+
+    const actions = div("btnrow");
+    const cancel = el("button",{class:"btn", type:"button"},["Cancel"]);
+    cancel.onclick = ()=> overlay.remove();
+    const save = el("button",{class:"btn primary", type:"button"},["Save"]);
+    save.onclick = ()=>{
+      // Map UI -> canonical stored fields
+      const sev = ui.pelvicSeverity;
+      existing.pelvic_pressure = (sev!=="none" && (ui.pelvicType==="heaviness"||ui.pelvicType==="both")) ? sev : "none";
+      existing.leakage = (sev!=="none" && (ui.pelvicType==="leakage"||ui.pelvicType==="both")) ? sev : "none";
+      existing.doming = ui.doming || "none";
+
+      // Delayed symptoms later that day / next morning
+      existing.delayedSymptoms = (ui.delayed === "yes");
+
+      existing.delayedSymptoms = (ui.delayed === "yes");
+
+      const psev = ui.painSeverity;
+      existing.pgp = (psev!=="none" && (ui.painType==="pelvis"||ui.painType==="both")) ? psev : "none";
+      existing.low_back = (psev!=="none" && (ui.painType==="back"||ui.painType==="both")) ? psev : "none";
+
+      existing.fatigue = (ui.recovery==="great") ? "none" : (ui.recovery==="ok" ? "mild" : "moderate");
+      existing.adherencePct = Math.round((Number(ui.completed||0)/days) * 100);
+
+      upsertCheckin({ ...existing, planId, weekIndex, createdAt:new Date().toISOString() });
+      overlay.remove();
+      render();
+    };
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    modal.appendChild(actions);
+
+    overlay.appendChild(modal);
+    overlay.onclick = (e)=>{ if(e.target===overlay) overlay.remove(); };
+    document.body.appendChild(overlay);
+  }
+
 // --- Tracking helpers (set-by-set)
 function parseDosageString(str){
   // Accepts "2-3 sets x 6-12 reps" or "2 sets x 6-12 reps" etc.
@@ -1341,7 +1891,8 @@ function renumberSetRows(rowsEl){
 
     // Week selector
     const wIdx = Math.max(0, Math.min(plan.weeks.length-1, state.activeWeekIndex || 0));
-    const wk = plan.weeks[wIdx];
+    const wkBase = plan.weeks[wIdx];
+    const wk = getAdaptiveWeek(plan, wIdx) || wkBase;
 
     const header = el("div",{class:"panel"},[
       el("div",{class:"hrow"},[
@@ -1365,15 +1916,18 @@ function renumberSetRows(rowsEl){
     const wkHeader = el("div",{class:"panel"},[
       el("div",{class:"hrow"},[
         el("div",{},[
-          el("h2",{},[wk.label]),
+          el("h2",{},[wk.narrative?.title || wk.label]),
           el("p",{},[`Start date: ${wk.startDate} • Template: ${wk.template} • Stage: ${wk.stageKey.toUpperCase()}`])
         ]),
         el("div",{class:"inline"},[
           el("span",{class:"badge ok"},[`Intensity: ${wk.dosage.intensity}`]),
           el("span",{class:"badge"},[`RIR main: ${wk.dosage.rirMain}`]),
           el("span",{class:"badge"},[`RIR accessory: ${wk.dosage.rirAcc}`]),
+          el("button",{class:"btn", type:"button", onclick:()=>openWeeklyCheckin(plan.id,wIdx)},["30-sec check-in"])
         ])
       ]),
+      wk.narrative?.explanation ? el("p",{class:"muted"},[wk.narrative.explanation]) : null,
+      wk.runGate ? renderRunGateCard(wk.runGate) : null,
       wk.warnings?.length ? el("div",{class:"badge danger", style:"margin-top:10px;"},[wk.warnings[0]]) : null
     ].filter(Boolean));
     wrap.appendChild(wkHeader);
@@ -1870,6 +2424,96 @@ function saveEditedLog(logId){
   }
   function pretty(s){
     return String(s).replace(/_/g," ").replace(/\b\w/g, m=>m.toUpperCase());
+  }
+
+  // Small UI building blocks used in Profile/Setup to reduce reading.
+  function card(title, body){
+    return el("div",{class:"card"},[
+      el("div",{class:"card-title"},[title]),
+      el("div",{class:"card-body"},[body || "—"]),
+    ]);
+  }
+
+  function sectionDetails(title, contentEl){
+    return el("details",{class:"details"},[
+      el("summary",{},[title]),
+      contentEl
+    ]);
+  }
+
+  function selectInput(value, options, onChange){
+    // options: [{v,t}]
+    return el("select",{value, onchange:(e)=>onChange(e.target.value)}, options.map(o=>opt(o.v,o.t,o.v===value)));
+  }
+
+  function textareaInput(value, onChange){
+    return el("textarea",{value, rows:"2", oninput:(e)=>onChange(e.target.value)},[]);
+  }
+
+  function goalLabels(goals){
+    const map = {
+      maintain_strength:"Maintain strength",
+      build_muscle:"Build muscle",
+      reduce_pain:"Reduce pain / feel better",
+      prepare_for_delivery:"Prepare for delivery",
+      return_heavy:"Return to heavy lifting",
+      return_running:"Return to running",
+      improve_glucose:"Improve glucose control",
+      posture_endurance:"Posture/upper back endurance",
+    };
+    return (goals||[]).map(g=>map[g]||pretty(g));
+  }
+
+  function programStyleLabel(style){
+    const map = { full_body:"Full-body", upper_lower:"Upper/Lower", ab_split:"2-day A/B", abc_rotation:"3-day A/B/C" };
+    return map[style] || pretty(style);
+  }
+
+  function equipmentLabel(set){
+    const map = { gym_full:"Full gym", home_db:"Home dumbbells", bands_only:"Bands only", barbell:"Barbell setup" };
+    return map[set] || pretty(set);
+  }
+
+  function stageSummaryText(p){
+    if(p.stage.mode === "pregnant"){
+      const due = p.stage.dueDate ? ` • due ${p.stage.dueDate}` : "";
+      return `Pregnant • week ${p.stage.weeksPregnant}${due}`;
+    }
+    if(p.stage.mode === "postpartum") return `Postpartum • week ${p.stage.weeksPostpartum+1} • ${p.stage.deliveryType}${p.stage.breastfeeding?" • breastfeeding":""}`;
+    return pretty(p.stage.mode);
+  }
+
+  function stageWeekQuickEditor(p){
+    if(p.stage.mode === "pregnant"){
+      return el("div",{class:"row"},[
+        el("input",{type:"number", min:"0", max:"42", value:String(p.stage.weeksPregnant||0), oninput:(e)=>{ p.stage.weeksPregnant = Math.max(0,Math.min(42,Number(e.target.value||0))); }},[]),
+        el("button",{class:"btn", type:"button", onclick:()=>{ p.stage.weeksPregnant = Math.min(42,(p.stage.weeksPregnant||0)+1); render(); }},["+1 wk"])
+      ]);
+    }
+    if(p.stage.mode === "postpartum"){
+      return el("div",{class:"row"},[
+        el("input",{type:"number", min:"0", max:"104", value:String(p.stage.weeksPostpartum||0), oninput:(e)=>{ p.stage.weeksPostpartum = Math.max(0,Math.min(104,Number(e.target.value||0))); }},[]),
+        el("button",{class:"btn", type:"button", onclick:()=>{ p.stage.weeksPostpartum = Math.min(104,(p.stage.weeksPostpartum||0)+1); render(); }},["+1 wk"])
+      ]);
+    }
+    return el("span",{class:"muted"},["—"]);
+  }
+
+  function renderConstraintsSnapshot(p){
+    const dials = computeDials(p);
+    const top = Object.entries(dials)
+      .filter(([k,v])=>typeof v === "number" && v>0 && k!=="FREQ")
+      .sort((a,b)=>b[1]-a[1])
+      .slice(0,6)
+      .map(([k,v])=>`${k}: ${v}`)
+      .join(" • ");
+    const dx = (p.diagnoses||[]).map(k=>DIAGNOSES.find(d=>d.key===k)?.label||pretty(k)).join("; ") || "None";
+    const limits = Object.entries(p.hardLimits||{}).filter(([k,v])=>v===true).map(([k])=>pretty(k)).join(", ") || "None";
+    return el("div",{},[
+      el("p",{class:"muted"},["Top constraints: ", top || "—"]),
+      el("p",{},[el("strong",{},["Diagnoses: "]), dx]),
+      el("p",{},[el("strong",{},["Hard limits: "]), limits]),
+    ]);
   }
 
   function fieldSelect(label, value, options, onChange, help){

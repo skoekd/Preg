@@ -23,7 +23,19 @@
       clearanceAcknowledged: false,
       providerRestrictions: { has: false, tags: [], notes: "" },
 
-      stage: { mode: "pregnant", weeksPregnant: 20, weeksPostpartum: 0, deliveryType:"vaginal", breastfeeding:false, dueDate:"", postpartumPlanWeeks: 24 },
+      stage: {
+        mode: "pregnant",
+        weeksPregnant: 20,
+        weeksPostpartum: 0,
+        deliveryType:"vaginal",
+        breastfeeding:false,
+        dueDate:"",
+        postpartumPlanWeeks: 24,
+        // If due date is provided, auto-calculate the current pregnancy week from today's date.
+        // This prevents mismatches like "29 weeks" + a late-pregnancy contraindicated movement.
+        autoWeekFromDueDate: true,
+        lastAutoSync: "",
+      },
 
       // Program structure controls how workouts differ across days.
       // Supported: full_body, upper_lower, ab_split, abc_rotation
@@ -47,6 +59,27 @@
       tone: "direct",
       lifestyle: { sleepHours: 7, workDemands:"mixed", activity:"moderate", stress:"moderate", support:"moderate" },
     };
+  }
+
+  // --- Pregnancy week tracking
+  // If the user provides a due date, keep weeksPregnant in sync automatically.
+  // Assumption: due date corresponds to 40w0d gestation.
+  function syncPregnancyWeekFromDueDate(profile){
+    try{
+      if(profile?.stage?.mode !== "pregnant") return;
+      if(!profile.stage.autoWeekFromDueDate) return;
+      if(!profile.stage.dueDate) return;
+      const due = new Date(profile.stage.dueDate);
+      if(isNaN(due.getTime())) return;
+
+      const now = new Date();
+      const diffDays = Math.round((due.getTime() - now.getTime()) / (1000*60*60*24));
+      // Weeks until due date (ceil keeps it conservative near week boundaries).
+      const weeksUntilDue = Math.max(0, Math.ceil(diffDays / 7));
+      const calcWeek = Math.max(0, Math.min(42, 40 - weeksUntilDue));
+      profile.stage.weeksPregnant = calcWeek;
+      profile.stage.lastAutoSync = now.toISOString();
+    }catch(e){ /* no-op */ }
   }
 
   // --- Data: symptom + diagnoses sets (with dropdowns)
@@ -140,6 +173,8 @@
       {name:"Dead Bug (no doming)", tags:{iap:0, position:"supine", carry:0, grip:0, impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
       {name:"Bird Dog (slow)", tags:{iap:0, position:"supported", carry:0, grip:0, impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
       {name:"90/90 Breathing (rib stack)", tags:{iap:0, position:"supine", carry:0, grip:0, impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Wall Breathing (hands supported)", tags:{iap:0, position:"standing", carry:0, grip:0, impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Half-Kneeling Anti-Rotation Press", tags:{iap:0, position:"supported", carry:0, grip:0, impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
     ],
     accessories: [
       {name:"Hip Thrust (bench)", tags:{iap:1, position:"supine", impact:0, isometric:0, equip:["gym_full","home_db"]}},
@@ -153,6 +188,10 @@
       {name:"Cat-Cow (gentle)", tags:{iap:0, position:"supported", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
       {name:"Hip Flexor Stretch (supported)", tags:{iap:0, position:"supported", impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
       {name:"Thoracic Opener (side-lying)", tags:{iap:0, position:"side", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Open Book (side-lying)", tags:{iap:0, position:"side", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Adductor Rockback (supported)", tags:{iap:0, position:"supported", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Seated Hamstring Stretch", tags:{iap:0, position:"seated", impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
+      {name:"Standing Calf Stretch", tags:{iap:0, position:"standing", impact:0, isometric:1, equip:["bands_only","home_db","gym_full"]}},
       {name:"Calf Raises", tags:{iap:0, position:"standing", impact:0, isometric:0, equip:["bands_only","home_db","gym_full"]}},
     ]
   };
@@ -330,7 +369,10 @@
       }
       // Prioritize more stretching/mobility in 3rd trimester and late pregnancy variants.
       if(variant === "pregnancy_min"){
-        blocks.push({title:"Mobility / stretch (finish)", pattern:"accessories", forced:(idx % 2 === 0 ? "Hip Flexor Stretch (supported)" : "Thoracic Opener (side-lying)")});
+        // Third trimester: make core + mobility non-optional and more prominent.
+        blocks.push({title:"Core stability (symptom-friendly)", pattern:"carry_core", forced:(idx % 2 === 0 ? "Pallof Press (anti-rotation)" : "Bird Dog (slow)")});
+        const stretchPick = (idx % 3 === 0) ? "Hip Flexor Stretch (supported)" : (idx % 3 === 1 ? "Adductor Rockback (supported)" : "Open Book (side-lying)");
+        blocks.push({title:"Mobility / stretch (finish)", pattern:"accessories", forced: stretchPick});
       } else if(variant === "pregnancy"){
         blocks.push({title:"Optional mobility (finish)", pattern:"accessories", forced:"Cat-Cow (gentle)", optional:true});
       }
@@ -720,6 +762,8 @@
 
   // Generate a multi-week plan that progresses to due date (if provided), and then postpartum for a user-selected duration.
   function generatePlan(profile){
+    // Ensure stage data is consistent before building timeline weeks.
+    syncStageFromDates(profile);
     const createdAt = new Date().toISOString();
     const id = "plan_" + Date.now();
 
@@ -849,6 +893,8 @@
   }
 
   function render(){
+    // Keep stage week in sync with due date if user enabled auto-tracking.
+    syncStageFromDates(state.profile);
     const root = $("#app");
     if(!root) return;
     root.innerHTML = "";
@@ -862,6 +908,27 @@
     if(state.route === "setup") root.appendChild(renderSetup());
     if(state.route === "history") root.appendChild(renderHistory());
     if(state.route === "about") root.appendChild(renderAbout());
+  }
+
+  function syncStageFromDates(profile){
+    try{
+      if(!profile?.stage) return;
+      const s = profile.stage;
+      if(s.mode !== "pregnant") return;
+      if(!s.dueDate || !s.autoWeekFromDueDate) return;
+      const due = new Date(s.dueDate);
+      if(isNaN(due.getTime())) return;
+
+      const now = new Date();
+      // weeks pregnant ≈ 40 - weeks until due date (using today's date).
+      const diffDays = Math.ceil((due.getTime() - now.getTime()) / (1000*60*60*24));
+      const weeksUntil = Math.ceil(diffDays / 7);
+      const calcWeeksPreg = 40 - weeksUntil;
+      const clamped = Math.max(0, Math.min(42, calcWeeksPreg));
+      // If the user typed a different week on purpose, they can turn off auto.
+      s.weeksPregnant = clamped;
+      s.lastAutoSync = todayKey();
+    } catch(e){ /* no-op */ }
   }
 
   // --- Profile summary (high-level, low-text)
@@ -1074,6 +1141,14 @@
           el("label",{},["Due date (optional)"]),
           el("input",{type:"date", value:p.stage.dueDate || "", onchange:(e)=>p.stage.dueDate=e.target.value}),
           el("div",{class:"help"},["If set, the program auto-builds week-by-week until due date."])
+        ]),
+        el("div",{class:"field col-6"},[
+          el("label",{},["Auto-track pregnancy week from due date"]),
+          el("select",{value: p.stage.autoWeekFromDueDate ? "yes":"no", onchange:(e)=>{ p.stage.autoWeekFromDueDate = (e.target.value==="yes"); render(); }},[
+            opt("yes","Yes (recommended)"),
+            opt("no","No (I'll set weeks manually)")
+          ]),
+          el("div",{class:"help"},[p.stage.dueDate ? `When enabled, the app recalculates week from today's date (last sync: ${p.stage.lastAutoSync || "—"}).` : "Add a due date to enable auto-tracking."])
         ]),
         el("div",{class:"field col-6"},[
           el("label",{},["Postpartum plan length"]),
@@ -1884,7 +1959,7 @@ function renumberSetRows(rowsEl){
     if(!plan || !plan.weeks || !plan.weeks.length){
       wrap.appendChild(el("div",{class:"panel"},[
         el("h1",{},["No plan generated yet"]),
-        el("p",{},["Go to the Profile tab to generate a plan."])
+        el("p",{},["Start with the Setup tab (questionnaire), then generate a plan from Profile."])
       ]));
       return wrap;
     }
@@ -1946,25 +2021,43 @@ function renumberSetRows(rowsEl){
     // sessions + tracking (for the selected week)
     wk.sessions.forEach((s,idx)=>{
       const dateKey = todayKey();
+      const compactList = s.blocks
+        .filter(b=>!b.optional)
+        .map(b=>b.exercise)
+        .slice(0,4)
+        .join(" • ") || "";
       const card = el("div",{class:"panel"},[
         el("div",{class:"hrow"},[
           el("h2",{},[s.name]),
           el("span",{class:"badge"},[`Session ${idx+1} / ${wk.sessions.length}`]),
         ]),
-        el("p",{},[`Dosage: ${s.dosage.main}; ${s.dosage.accessory}.`]),
-        el("table",{class:"table"},[
-          el("thead",{},[el("tr",{},[el("th",{},["Block"]),el("th",{},["Exercise"]),el("th",{},["Notes"])])]),
-          el("tbody",{}, s.blocks.map(b=>el("tr",{},[
-            el("td",{},[b.title]),
-            el("td",{},[b.exercise]),
-            el("td",{},[b.optional ? "Optional (auto-trimmed if time-limited)" : ""])
-          ])))
+        el("p",{class:"muted"},[compactList]),
+
+        el("details",{open:false},[
+          el("summary",{},["Workout details", el("span",{class:"summary-note"},["exercises + notes"])])
         ]),
 
         el("details",{open:false},[
           el("summary",{},["Track this workout", el("span",{class:"summary-note"},["log sets/reps/weight"])])
         ]),
       ]);
+
+      // fill the details block with the full table (reduces on-screen reading by default)
+      const detailPanels = $$("details", card);
+      const workoutDetails = detailPanels?.[0];
+      if(workoutDetails){
+        workoutDetails.appendChild(el("div",{class:"panel"},[
+          el("p",{class:"muted"},[`Planned dosage: ${s.dosage.main}; ${s.dosage.accessory}.`]),
+          el("table",{class:"table"},[
+            el("thead",{},[el("tr",{},[el("th",{},["Block"]),el("th",{},["Exercise"]),el("th",{},["Notes"])])]),
+            el("tbody",{}, s.blocks.map(b=>el("tr",{},[
+              el("td",{},[b.title]),
+              el("td",{},[b.exercise]),
+              el("td",{},[b.optional ? "Optional (auto-trimmed if time-limited)" : ""])
+            ])))
+          ])
+        ]));
+      }
 
       const details = card.querySelector("details");
       if(details){
